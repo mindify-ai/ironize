@@ -32,7 +32,7 @@ workspace policy and usage limits apply without a separate provider key.
 ## Install
 
 ```sh
-cargo install --git https://github.com/mindify-ai/Iron
+cargo install --git https://github.com/mindify-ai/ironize
 ```
 
 ## Quick start

@@ -11,7 +11,7 @@ use super::token_login;
 use crate::error::{Error, Result};
 use crate::session::{normalize_base_url, Session};
 
-/// Where to send the user, handed to the caller before Iron starts waiting.
+/// Where to send the user, handed to the caller before Ironize starts waiting.
 #[derive(Debug, Clone)]
 pub struct LoginPrompt {
     pub authorize_url: Url,
@@ -100,7 +100,7 @@ async fn accept_callback(listener: &TcpListener, state: &str) -> Result<Callback
                 respond(
                     &mut stream,
                     200,
-                    "Iron is signed in to Mindify Cortex. You can close this window.",
+                    "Ironize is signed in to Mindify Cortex. You can close this window.",
                 )
                 .await;
                 return Ok(callback);
@@ -116,7 +116,7 @@ fn parse_callback(
 ) -> std::result::Result<Callback, &'static str> {
     let url = Url::parse("http://127.0.0.1")
         .and_then(|base| base.join(target))
-        .map_err(|_| "Invalid Iron login request.")?;
+        .map_err(|_| "Invalid Ironize login request.")?;
     if url.path() != "/callback" {
         return Err("Not found.");
     }
@@ -132,7 +132,7 @@ fn parse_callback(
         }
     }
     if !state.is_some_and(|s| constant_time_eq(s.as_bytes(), expected_state.as_bytes())) {
-        return Err("Invalid Iron login response.");
+        return Err("Invalid Ironize login response.");
     }
     let token = token
         .filter(|t| !t.is_empty())

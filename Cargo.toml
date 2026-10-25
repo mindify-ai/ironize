@@ -2,11 +2,15 @@
 name = "ironize"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.88"
 description = "Ironize: an open-source, high-performance AI agent harness and terminal UI written in Rust, powered by Mindify Cortex."
 license = "Apache-2.0"
-repository = "https://github.com/mindify-ai/Iron"
+repository = "https://github.com/mindify-ai/ironize"
+homepage = "https://github.com/mindify-ai/ironize"
 readme = "README.md"
+keywords = ["ai", "agent", "llm", "cli", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+include = ["/src", "/tests", "/Cargo.lock", "/README.md", "/LICENSE"]
 
 [lib]
 name = "ironize"
@@ -47,3 +51,8 @@ url = "2"
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

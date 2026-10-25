@@ -171,6 +171,28 @@ The tests cover login flows, the SSE stream decoder, every tool, the agent loop
 (against a mock Cortex gateway), and the TUI (state machine and rendered
 screens). No network access or Cortex account is needed.
 
+## CI/CD
+
+| Workflow | Runs on | What it does |
+| --- | --- | --- |
+| `ci.yml` | push to `main`, PRs | fmt, clippy, tests (Linux, macOS), Windows build, MSRV check, `cargo publish --dry-run` |
+| `security.yml` | push to `main`, PRs, weekly | `cargo deny` (advisories, licenses, bans, sources), dependency review, CodeQL (Rust and Actions), TruffleHog secret scan, zizmor workflow audit |
+| `code-review.yml` | PRs | Claude reviews the diff for bugs and security issues and comments inline (needs the `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` secret) |
+| `release.yml` | tags `vX.Y.Z` | re-runs CI and the audit, builds binaries for 5 targets, publishes a GitHub release with checksums and provenance, then publishes to crates.io |
+
+To release, bump `version` in `Cargo.toml`, merge, then tag and push:
+
+```sh
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+Publishing to crates.io is opt-in: set the repository variable `PUBLISH_CRATES=true`
+and create a `crates-io` environment (add required reviewers to approve each
+publish). The first publish needs a `CARGO_REGISTRY_TOKEN` secret; after that,
+configure [trusted publishing](https://crates.io/docs/trusted-publishing) for
+`release.yml` on crates.io and delete the secret. Run `cargo deny check` locally
+to check dependencies against `deny.toml`.
+
 ## License
 
 Apache-2.0

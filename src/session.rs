@@ -87,28 +87,32 @@ fn is_loopback_host(url: &Url) -> bool {
     }
 }
 
-/// Reads and writes the saved session under the Iron config directory.
+/// `~/.config/ironize` (or the platform equivalent), overridable with
+/// `IRONIZE_CONFIG_DIR`.
+pub fn config_dir() -> Result<PathBuf> {
+    match std::env::var_os("IRONIZE_CONFIG_DIR") {
+        Some(dir) => Ok(PathBuf::from(dir)),
+        None => dirs::config_dir()
+            .map(|d| d.join("ironize"))
+            .ok_or_else(|| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "could not determine the user config directory",
+                ))
+            }),
+    }
+}
+
+/// Reads and writes the saved session under the Ironize config directory.
 #[derive(Debug, Clone)]
 pub struct SessionStore {
     path: PathBuf,
 }
 
 impl SessionStore {
-    /// `~/.config/iron/session.json` (or the platform equivalent), overridable
-    /// with `IRON_CONFIG_DIR`.
+    /// `session.json` in [`config_dir`].
     pub fn default_location() -> Result<Self> {
-        let dir = match std::env::var_os("IRON_CONFIG_DIR") {
-            Some(dir) => PathBuf::from(dir),
-            None => dirs::config_dir()
-                .ok_or_else(|| {
-                    Error::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "could not determine the user config directory",
-                    ))
-                })?
-                .join("iron"),
-        };
-        Ok(Self::at(dir.join("session.json")))
+        Ok(Self::at(config_dir()?.join("session.json")))
     }
 
     pub fn at(path: impl Into<PathBuf>) -> Self {
@@ -129,7 +133,7 @@ impl SessionStore {
         self.load_saved()
     }
 
-    /// The session saved by `iron login`, ignoring the environment.
+    /// The session saved by `ironize login`, ignoring the environment.
     pub fn load_saved(&self) -> Result<Option<Session>> {
         match std::fs::read_to_string(&self.path) {
             Ok(body) => Ok(Some(serde_json::from_str(&body)?)),
@@ -155,7 +159,7 @@ impl SessionStore {
 
 /// Writes a file readable only by the current user (0600 in a 0700 dir on
 /// Unix), replacing it atomically so a crash never leaves a torn session.
-fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
+pub(crate) fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
     use std::io::Write;
 
     let dir = path.parent().unwrap_or_else(|| Path::new("."));

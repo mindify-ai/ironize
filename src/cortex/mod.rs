@@ -1,7 +1,9 @@
 //! HTTP client for the Mindify Cortex platform.
 
+pub mod chat;
 mod types;
 
+pub use chat::{ChatStream, Message, ToolCall, ToolDefinition};
 pub use types::*;
 
 use reqwest::{header, Method, RequestBuilder, Response, StatusCode};
@@ -11,7 +13,7 @@ use url::Url;
 use crate::error::{Error, Result};
 use crate::session::{normalize_base_url, Session};
 
-const USER_AGENT: &str = concat!("iron/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("ironize/", env!("CARGO_PKG_VERSION"));
 /// Better Auth's session cookie. Most routes read the bearer header through the
 /// `bearer()` plugin; the cookie mirrors the TypeScript CLI for older routes.
 const SESSION_COOKIE: &str = "better-auth.session_token";
@@ -52,7 +54,9 @@ impl CortexClient {
             .await?;
         let session: Option<AuthSession> = read_json(response, "verify the session").await?;
         session.ok_or_else(|| {
-            Error::Unauthenticated("the session is expired or was revoked; run `iron login`".into())
+            Error::Unauthenticated(
+                "the session is expired or was revoked; run `ironize login`".into(),
+            )
         })
     }
 
@@ -123,34 +127,35 @@ impl CortexClient {
             .map(drop)
     }
 
-    /// One non-streaming OpenAI Chat Completions turn through the gateway,
+    /// Starts a streaming OpenAI Chat Completions turn through the gateway,
     /// authenticated with the launch token rather than the session.
-    pub async fn complete(
+    pub async fn stream_chat(
         &self,
         ticket: &LaunchTicket,
-        messages: &[ChatMessage],
-    ) -> Result<String> {
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatStream> {
         let url = format!(
             "{}/v1/chat/completions",
             ticket.base_url.trim_end_matches('/')
         );
+        let body = chat::ChatRequest {
+            model: &ticket.model,
+            messages,
+            tools,
+            stream: true,
+            stream_options: chat::StreamOptions {
+                include_usage: true,
+            },
+        };
         let request = self
             .http
             .post(url)
             .bearer_auth(&ticket.token)
-            .json(&serde_json::json!({
-                "model": ticket.model,
-                "messages": messages,
-                "stream": false,
-            }));
+            .header(header::ACCEPT, "text/event-stream")
+            .json(&body);
         let response = self.send(request, "call the model gateway").await?;
-        let completion: ChatCompletion = read_json(response, "call the model gateway").await?;
-        Ok(completion
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|c| c.message.content)
-            .unwrap_or_default())
+        Ok(ChatStream::new(response))
     }
 
     fn request(&self, method: Method, path: &str) -> Result<RequestBuilder> {
@@ -188,7 +193,9 @@ pub(crate) fn http_client() -> Result<reqwest::Client> {
         .user_agent(USER_AGENT)
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(300))
+        // No overall deadline: model replies stream for as long as they need.
+        // A stalled connection is caught by the per-read timeout instead.
+        .read_timeout(std::time::Duration::from_secs(180))
         .build()?)
 }
 
@@ -199,7 +206,7 @@ pub(crate) async fn check_status(response: Response, operation: &str) -> Result<
     }
     if status.is_redirection() {
         return Err(Error::Unauthenticated(format!(
-            "Cortex redirected instead of answering while trying to {operation}; run `iron login`"
+            "Cortex redirected instead of answering while trying to {operation}; run `ironize login`"
         )));
     }
     let content_type = content_type(&response);

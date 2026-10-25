@@ -14,7 +14,7 @@ pub enum Error {
 
     /// Cortex answered, but not with the JSON this client expects (an HTML
     /// error page, a proxy interstitial, or an older server).
-    #[error("Cortex returned an unexpected response while trying to {operation}; the server may not support this Iron version yet")]
+    #[error("Cortex returned an unexpected response while trying to {operation}; the server may not support this Ironize version yet")]
     UnexpectedResponse { operation: String },
 
     #[error("invalid Cortex base URL {url:?}: {reason}")]

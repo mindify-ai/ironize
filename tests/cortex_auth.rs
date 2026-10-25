@@ -2,9 +2,10 @@
 
 use std::time::Duration;
 
-use iron::auth::{self, BrowserLogin};
-use iron::cortex::{ChatMessage, CortexClient, Harness};
-use iron::{Error, Session};
+use ironize::auth::{self, BrowserLogin};
+use ironize::cortex::chat::StreamEvent;
+use ironize::cortex::{CortexClient, Harness, Message};
+use ironize::{Error, Session};
 use serde_json::json;
 use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -43,7 +44,7 @@ fn plain_client() -> reqwest::Client {
 }
 
 /// Plays the browser's part: follows the authorize URL's redirect target back
-/// to Iron's loopback listener, as Cortex's `/api/auth/cli/callback` would.
+/// to Ironize's loopback listener, as Cortex's `/api/auth/cli/callback` would.
 fn complete_in_browser(
     authorize_url: &url::Url,
     token: &str,
@@ -246,7 +247,7 @@ async fn gateway_launch_scopes_model_calls_to_launch_token() {
                 { "id": "gpt-5.6-sol", "provider": "openai", "displayName": "GPT-5.6 Sol", "enabled": true,
                   "supportsTools": true, "compatibleHarnesses": ["codex", "opencode"] },
                 { "id": "claude-only", "provider": "anthropic", "displayName": "Claude", "enabled": true,
-                  "supportsTools": true, "compatibleHarnesses": ["claude", "iron-future"] },
+                  "supportsTools": true, "compatibleHarnesses": ["claude", "ironize-future"] },
                 { "id": "disabled", "provider": "openai", "displayName": "Off", "enabled": false,
                   "supportsTools": true, "compatibleHarnesses": ["opencode"] }
             ]
@@ -266,10 +267,14 @@ async fn gateway_launch_scopes_model_calls_to_launch_token() {
     Mock::given(method("POST"))
         .and(path("/api/v1/chat/completions"))
         .and(header("authorization", "Bearer cgw_scoped"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "chatcmpl-1", "object": "chat.completion",
-            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "Hello from Cortex" }, "finish_reason": "stop" }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello \"}}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"from Cortex\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            "text/event-stream",
+        ))
         .expect(1)
         .mount(&server)
         .await;
@@ -293,10 +298,16 @@ async fn gateway_launch_scopes_model_calls_to_launch_token() {
         .await
         .unwrap();
     assert!(!format!("{ticket:?}").contains("cgw_scoped"));
-    let answer = client
-        .complete(&ticket, &[ChatMessage::user("hi")])
+    let mut stream = client
+        .stream_chat(&ticket, &[Message::user("hi")], &[])
         .await
         .unwrap();
+    let mut answer = String::new();
+    while let Some(event) = stream.next().await {
+        if let StreamEvent::Text(text) = event.unwrap() {
+            answer.push_str(&text);
+        }
+    }
     assert_eq!(answer, "Hello from Cortex");
     client.finish_launch(&ticket.launch_id, 0).await.unwrap();
 }

@@ -1,4 +1,4 @@
-//! Wire types for the Cortex endpoints Iron uses.
+//! Wire types for the Cortex endpoints Ironize uses.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,7 @@ pub enum Harness {
     Claude,
     Codex,
     Gemini,
-    /// OpenAI Chat Completions, the protocol Iron's gateway client speaks.
+    /// OpenAI Chat Completions, the protocol Ironize's gateway client speaks.
     Opencode,
 }
 
@@ -84,7 +84,7 @@ pub(crate) struct GatewayOverview {
 }
 
 /// A short-lived (30 minute) gateway token scoped to one user, workspace,
-/// harness and model. The long-lived session token never leaves Iron.
+/// harness and model. The long-lived session token never leaves Ironize.
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchTicket {
@@ -108,42 +108,4 @@ impl std::fmt::Debug for LaunchTicket {
             .field("workspace", &self.workspace)
             .finish()
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: String,
-}
-
-impl ChatMessage {
-    pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: "system".into(),
-            content: content.into(),
-        }
-    }
-
-    pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: "user".into(),
-            content: content.into(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct ChatCompletion {
-    pub choices: Vec<ChatChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct ChatChoice {
-    pub message: ChatChoiceMessage,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct ChatChoiceMessage {
-    #[serde(default)]
-    pub content: Option<String>,
 }

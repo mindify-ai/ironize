@@ -1,19 +1,19 @@
 [package]
-name = "iron"
-version = "0.1.0"
+name = "ironize"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.80"
-description = "An open-source, high-performance AI agent harness written in Rust, with first-class Mindify Cortex authentication."
+description = "Ironize: an open-source, high-performance AI agent harness and terminal UI written in Rust, powered by Mindify Cortex."
 license = "Apache-2.0"
 repository = "https://github.com/mindify-ai/Iron"
 readme = "README.md"
 
 [lib]
-name = "iron"
+name = "ironize"
 path = "src/lib.rs"
 
 [[bin]]
-name = "iron"
+name = "ironize"
 path = "src/main.rs"
 
 [dependencies]
@@ -22,12 +22,26 @@ clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
 open = "5"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "signal", "process", "sync", "fs"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+bytes = "1"
+futures = "0.3"
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+pulldown-cmark = { version = "0.12", default-features = false }
+unicode-width = "0.2"
+similar = "2"
+ignore = "0.4"
+globset = "0.4"
+regex = "1"
+html2text = "0.12"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 url = "2"
 
 [dev-dependencies]

@@ -69,7 +69,26 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     app.scroll = app.scroll.min(max_scroll);
     let start = lines.len().saturating_sub(height + app.scroll);
     let visible: Vec<Line> = lines.into_iter().skip(start).take(height).collect();
+    let widths: Vec<usize> = visible.iter().map(Line::width).collect();
     frame.render_widget(Paragraph::new(visible), area);
+    app.transcript_area = area;
+    app.transcript_top = start;
+
+    if let Some(selection) = app.selection {
+        let highlight = Style::default().fg(theme::TEXT).bg(theme::SELECTION_BG);
+        for (row, width) in widths.into_iter().enumerate() {
+            let width = width.min(area.width as usize);
+            if let Some((from, to)) = selection.columns(start + row, width) {
+                let cells = Rect::new(
+                    area.x + from as u16,
+                    area.y + row as u16,
+                    (to - from) as u16,
+                    1,
+                );
+                frame.buffer_mut().set_style(cells, highlight);
+            }
+        }
+    }
 
     if app.scroll > 0 {
         let label = format!(" ↓ {} more · pgdn ", app.scroll);
@@ -320,7 +339,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         ),
     };
     let mut left = vec![Span::styled(badge, style)];
-    if mode != PermissionMode::Default {
+    if let Some((toast, _)) = &app.toast {
+        left = vec![Span::styled(
+            format!("  ✓ {toast}"),
+            theme::bold(theme::SUCCESS),
+        )];
+    } else if mode != PermissionMode::Default {
         left.push(Span::styled(" (shift+tab to cycle)", theme::faint()));
     }
     let right = Line::from(vec![
@@ -540,6 +564,106 @@ mod tests {
         for (w, h) in [(10, 5), (1, 1), (30, 8)] {
             screen(&mut app, w, h);
         }
+    }
+
+    fn mouse(
+        kind: crossterm::event::MouseEventKind,
+        column: u16,
+        row: u16,
+    ) -> crossterm::event::Event {
+        crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        })
+    }
+
+    fn row_of(screen: &str, needle: &str) -> u16 {
+        screen.lines().position(|l| l.contains(needle)).unwrap() as u16
+    }
+
+    #[test]
+    fn drag_selects_highlights_and_copies() {
+        use super::super::app::Action;
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        app.on_event(AppEvent::Agent(AgentEvent::TextDelta(
+            "first line of the answer\n\nsecond paragraph here".into(),
+        )));
+        let s = screen(&mut app, 60, 30);
+        let (r0, r1) = (row_of(&s, "first line"), row_of(&s, "second paragraph"));
+
+        app.on_terminal(mouse(MouseEventKind::Down(MouseButton::Left), 8, r0));
+        app.on_terminal(mouse(MouseEventKind::Drag(MouseButton::Left), 30, r0));
+        app.on_terminal(mouse(MouseEventKind::Drag(MouseButton::Left), 7, r1));
+        app.on_terminal(mouse(MouseEventKind::Up(MouseButton::Left), 7, r1));
+        assert_eq!(
+            app.take_actions(),
+            [Action::Copy("line of the answer\n\n  second".into())]
+        );
+        assert!(app
+            .toast
+            .as_ref()
+            .unwrap()
+            .0
+            .starts_with("Copied 28 characters"));
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 30)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(8, r0)].bg, theme::SELECTION_BG);
+        assert_ne!(buffer[(7, r0)].bg, theme::SELECTION_BG);
+        assert_eq!(buffer[(7, r1)].bg, theme::SELECTION_BG);
+        assert_ne!(buffer[(8, r1)].bg, theme::SELECTION_BG);
+
+        // ctrl+c copies again instead of quitting, esc clears.
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert!(matches!(&app.take_actions()[..], [Action::Copy(_)]));
+        assert!(app.selection.is_none());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn double_click_copies_a_word_and_plain_click_clears() {
+        use super::super::app::Action;
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        app.on_event(AppEvent::Agent(AgentEvent::TextDelta(
+            "edit src/tui/app.rs now".into(),
+        )));
+        let s = screen(&mut app, 60, 30);
+        let r = row_of(&s, "edit src");
+        let down = mouse(MouseEventKind::Down(MouseButton::Left), 12, r);
+        let up = mouse(MouseEventKind::Up(MouseButton::Left), 12, r);
+        app.on_terminal(down.clone());
+        app.on_terminal(up.clone());
+        assert!(app.selection.is_none(), "a click alone selects nothing");
+        app.on_terminal(down);
+        app.on_terminal(up);
+        assert_eq!(app.take_actions(), [Action::Copy("src/tui/app.rs".into())]);
+        app.on_terminal(mouse(MouseEventKind::Down(MouseButton::Left), 2, r + 3));
+        assert!(app.selection.is_some());
+    }
+
+    #[test]
+    fn pastes_into_prompt_and_toggles_mouse() {
+        use super::super::app::Action;
+        let mut app = app();
+        app.on_terminal(crossterm::event::Event::Paste("from\r\nclipboard".into()));
+        assert_eq!(app.input.text(), "from\nclipboard");
+        app.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('v'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert_eq!(app.take_actions(), [Action::Paste]);
+        app.on_event(AppEvent::Pasted(Ok(" more".into())));
+        assert_eq!(app.input.text(), "from\nclipboard more");
+        app.submit_text("/mouse".into());
+        assert_eq!(app.take_actions(), [Action::SetMouseCapture(false)]);
     }
 
     #[test]

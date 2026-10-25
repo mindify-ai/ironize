@@ -56,6 +56,9 @@ ironize run --yes "add a CHANGELOG entry for the last commit"   # headless
 - **Model picker** (`/model`) over your workspace's gateway catalog, with type-to-filter.
 - **Queued follow-ups**: type while Ironize works; the message is sent when the turn ends.
 - Prompt **history**, multi-line input, mouse-wheel scrolling and token usage in the footer.
+- **Select and copy** transcript text with the mouse: drag (the view scrolls as you drag past
+  the edge), double-click a word or path, triple-click a line. Copies go to the system
+  clipboard and through OSC 52, so they work over SSH and in tmux too.
 
 | Command | What it does |
 | --- | --- |
@@ -66,6 +69,7 @@ ironize run --yes "add a CHANGELOG entry for the last commit"   # headless
 | `/status` | Account, model, workspace, mode and token usage |
 | `/todos` | Show the current task list |
 | `/expand` | Toggle full tool output |
+| `/mouse` | Toggle mouse capture (off hands selection back to your terminal) |
 | `/exit` | Quit |
 
 | Key | Action |
@@ -75,7 +79,11 @@ ironize run --yes "add a CHANGELOG entry for the last commit"   # headless
 | `esc` | Interrupt the current turn |
 | `shift+tab` | Cycle permission mode |
 | `↑` / `↓` | Prompt history |
-| `pgup` / `pgdn`, mouse wheel | Scroll (hold `shift` to select text with the mouse) |
+| `pgup` / `pgdn`, mouse wheel | Scroll |
+| drag, double-click, triple-click | Select text, a word or a line; it is highlighted and copied to the clipboard |
+| `ctrl+c` with a selection | Copy the selection again (`esc` clears it) |
+| `ctrl+v`, your terminal's paste | Paste into the prompt |
+| `shift` + drag | Native terminal selection while mouse capture is on |
 | `ctrl+o` | Expand tool output |
 | `ctrl+c` twice, `ctrl+d` | Quit |
 

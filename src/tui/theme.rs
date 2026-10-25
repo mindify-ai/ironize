@@ -15,6 +15,7 @@ pub const USER_BG: Color = Color::Rgb(38, 38, 50);
 pub const ADDED_BG: Color = Color::Rgb(22, 58, 36);
 pub const REMOVED_BG: Color = Color::Rgb(72, 28, 34);
 pub const SELECTED_BG: Color = Color::Rgb(48, 42, 76);
+pub const SELECTION_BG: Color = Color::Rgb(76, 64, 140);
 
 pub const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 pub const BULLET: &str = "● ";

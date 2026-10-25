@@ -1,8 +1,10 @@
 //! The interactive terminal UI.
 
 pub mod app;
+pub mod clipboard;
 pub mod input;
 pub mod markdown;
+pub mod selection;
 pub mod theme;
 pub mod transcript;
 pub mod view;
@@ -160,6 +162,20 @@ pub async fn run(
                         let mut config = Config::load();
                         config.permission_mode = Some(mode);
                         let _ = config.save();
+                    }
+                    Action::Copy(text) => clipboard::copy(&text),
+                    Action::Paste => {
+                        let tx = tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let _ = tx.send(AppEvent::Pasted(clipboard::paste()));
+                        });
+                    }
+                    Action::SetMouseCapture(on) => {
+                        let _ = if on {
+                            execute!(stdout(), EnableMouseCapture)
+                        } else {
+                            execute!(stdout(), DisableMouseCapture)
+                        };
                     }
                     Action::Quit => {}
                 }

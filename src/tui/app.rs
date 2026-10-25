@@ -4,9 +4,13 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::Rect;
 
 use super::input::Input;
+use super::selection::{self, Pos, Selection};
 use super::transcript::{Entry, Level, ToolStatus, Transcript, Welcome};
 use crate::agent::{
     AgentEvent, Decision, PermissionMode, PermissionRequest, SharedMode, TurnOutcome,
@@ -16,6 +20,8 @@ use crate::cortex::CatalogEntry;
 use crate::tools::Todo;
 
 const DOUBLE_PRESS: Duration = Duration::from_millis(1500);
+const MULTI_CLICK: Duration = Duration::from_millis(400);
+const TOAST: Duration = Duration::from_secs(3);
 
 /// Slash commands: name, argument hint, description.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
@@ -30,6 +36,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("/status", "", "Show account, model and session details"),
     ("/todos", "", "Show the current task list"),
     ("/expand", "", "Toggle full tool output (ctrl+o)"),
+    (
+        "/mouse",
+        "",
+        "Toggle mouse capture (off: native terminal selection)",
+    ),
     ("/exit", "", "Quit Ironize"),
 ];
 
@@ -41,6 +52,11 @@ pub enum Action {
     SetModel(String),
     ClearConversation,
     SaveMode(PermissionMode),
+    /// Put text on the system clipboard.
+    Copy(String),
+    /// Read the system clipboard into the prompt.
+    Paste,
+    SetMouseCapture(bool),
     Quit,
 }
 
@@ -51,6 +67,7 @@ pub enum AppEvent {
     TurnFinished(TurnOutcome),
     Models(Result<Vec<CatalogEntry>, String>),
     ModelChanged(Result<String, String>),
+    Pasted(Result<String, String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +129,13 @@ pub struct App {
     /// Lines scrolled up from the bottom; 0 follows new output.
     pub scroll: usize,
     pub viewport: usize,
+    /// Where the transcript was last drawn, and the line shown at its top.
+    pub transcript_area: Rect,
+    pub transcript_top: usize,
+    pub selection: Option<Selection>,
+    pub mouse_capture: bool,
+    /// A short message shown in the footer, e.g. after copying.
+    pub toast: Option<(String, Instant)>,
     pub should_quit: bool,
     pub dirty: bool,
     pub history: Vec<String>,
@@ -120,6 +144,10 @@ pub struct App {
     queued: VecDeque<String>,
     actions: Vec<Action>,
     last_ctrl_c: Option<Instant>,
+    /// Time, cell and count of the last left click, for double/triple clicks.
+    last_click: Option<(Instant, Pos, u8)>,
+    /// Whether a left-button drag is extending the selection, and whether it moved.
+    dragging: Option<bool>,
 }
 
 impl App {
@@ -150,6 +178,11 @@ impl App {
             frame: 0,
             scroll: 0,
             viewport: 20,
+            transcript_area: Rect::default(),
+            transcript_top: 0,
+            selection: None,
+            mouse_capture: true,
+            toast: None,
             should_quit: false,
             dirty: true,
             history,
@@ -158,6 +191,8 @@ impl App {
             queued: VecDeque::new(),
             actions: Vec::new(),
             last_ctrl_c: None,
+            last_click: None,
+            dragging: None,
         }
     }
 
@@ -176,6 +211,19 @@ impl App {
         if self.busy.is_some() {
             self.dirty = true;
         }
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() > TOAST)
+        {
+            self.toast = None;
+            self.dirty = true;
+        }
+    }
+
+    pub fn toast(&mut self, text: impl Into<String>) {
+        self.toast = Some((text.into(), Instant::now()));
+        self.dirty = true;
     }
 
     /// Slash commands matching the input, while the user is typing one.
@@ -220,6 +268,10 @@ impl App {
             AppEvent::ModelChanged(Err(e)) => {
                 self.notice(Level::Error, format!("Could not switch model: {e}"))
             }
+            AppEvent::Pasted(Ok(text)) => self.paste(&text),
+            AppEvent::Pasted(Err(e)) => self.toast(format!(
+                "Could not read the clipboard ({e}) · paste with your terminal instead"
+            )),
         }
     }
 
@@ -328,20 +380,131 @@ impl App {
     pub fn on_terminal(&mut self, event: Event) {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
-            Event::Paste(text) => {
-                if self.permission.is_none() && self.picker.is_none() {
-                    self.input.insert(&text);
+            Event::Paste(text) => self.paste(&text),
+            Event::Mouse(mouse) => {
+                if !self.on_mouse(mouse) {
+                    return;
                 }
             }
-            Event::Mouse(mouse) => match mouse.kind {
-                MouseEventKind::ScrollUp => self.scroll_by(3),
-                MouseEventKind::ScrollDown => self.scroll_by(-3),
-                _ => return,
-            },
-            Event::Resize(..) => self.transcript.invalidate(),
+            Event::Resize(..) => {
+                self.transcript.invalidate();
+                self.selection = None;
+            }
             _ => return,
         }
         self.dirty = true;
+    }
+
+    fn paste(&mut self, text: &str) {
+        if let Some(picker) = &mut self.picker {
+            picker.filter.push_str(text.trim());
+            picker.selected = 0;
+        } else if self.permission.is_none() {
+            self.input.insert(text);
+        }
+        self.dirty = true;
+    }
+
+    /// Handles a mouse event; returns whether anything changed.
+    fn on_mouse(&mut self, mouse: MouseEvent) -> bool {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll_by(3),
+            MouseEventKind::ScrollDown => self.scroll_by(-3),
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(pos) = self.transcript_pos(mouse.column, mouse.row, false) else {
+                    self.dragging = None;
+                    return self.selection.take().is_some();
+                };
+                let clicks = match self.last_click {
+                    Some((at, last, n)) if last == pos && at.elapsed() < MULTI_CLICK => n % 3 + 1,
+                    _ => 1,
+                };
+                self.last_click = Some((Instant::now(), pos, clicks));
+                match clicks {
+                    1 => {
+                        self.selection = Some(Selection::at(pos));
+                        self.dragging = Some(false);
+                    }
+                    2 => {
+                        let lines = self.rendered_lines();
+                        let text = lines.get(pos.0).map(selection::plain).unwrap_or_default();
+                        let (from, to) = selection::word_at(&text, pos.1);
+                        self.select((pos.0, from), (pos.0, to.saturating_sub(1)));
+                    }
+                    _ => self.select((pos.0, 0), (pos.0, usize::MAX - 1)),
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging.is_some() => {
+                let area = self.transcript_area;
+                if mouse.row < area.y {
+                    self.scroll_by(1);
+                } else if mouse.row >= area.bottom() {
+                    self.scroll_by(-1);
+                }
+                let pos = self.transcript_pos(mouse.column, mouse.row, true);
+                if let (Some(selection), Some(pos)) = (&mut self.selection, pos) {
+                    selection.head = pos;
+                    self.dragging = Some(true);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.dragging.is_some() => {
+                if self.dragging.take() == Some(true) {
+                    self.copy_selection();
+                } else {
+                    self.selection = None;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The transcript cell under a screen position. With `clamp`, positions
+    /// outside the transcript snap to its nearest edge (for drags).
+    fn transcript_pos(&self, column: u16, row: u16, clamp: bool) -> Option<Pos> {
+        let area = self.transcript_area;
+        if area.width == 0 || area.height == 0 {
+            return None;
+        }
+        let inside =
+            column >= area.x && column < area.right() && row >= area.y && row < area.bottom();
+        if !inside && !clamp {
+            return None;
+        }
+        let row = row.clamp(area.y, area.bottom() - 1);
+        let column = column.clamp(area.x, area.right() - 1);
+        Some((
+            self.transcript_top + (row - area.y) as usize,
+            (column - area.x) as usize,
+        ))
+    }
+
+    fn rendered_lines(&mut self) -> Vec<ratatui::text::Line<'static>> {
+        self.transcript
+            .lines(self.transcript_area.width, self.expanded, self.frame)
+    }
+
+    fn select(&mut self, anchor: Pos, head: Pos) {
+        self.selection = Some(Selection { anchor, head });
+        self.dragging = None;
+        self.copy_selection();
+    }
+
+    /// Copies the selected transcript text to the clipboard.
+    fn copy_selection(&mut self) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let text = selection.text(&self.rendered_lines());
+        if text.trim().is_empty() {
+            return;
+        }
+        let count = text.chars().count();
+        self.toast(format!(
+            "Copied {count} character{} · esc to clear",
+            if count == 1 { "" } else { "s" }
+        ));
+        self.actions.push(Action::Copy(text));
     }
 
     fn scroll_by(&mut self, delta: isize) {
@@ -350,6 +513,20 @@ impl App {
 
     pub fn on_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.selection.is_some() {
+            match key.code {
+                KeyCode::Char('c') if ctrl => {
+                    self.copy_selection();
+                    self.selection = None;
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.selection = None;
+                    return;
+                }
+                _ => {}
+            }
+        }
         if ctrl && key.code == KeyCode::Char('c') {
             return self.ctrl_c();
         }
@@ -397,6 +574,7 @@ impl App {
             }
             KeyCode::Char('o') if ctrl => self.toggle_expanded(),
             KeyCode::Char('l') if ctrl => self.scroll = 0,
+            KeyCode::Char('v') if ctrl => self.actions.push(Action::Paste),
             KeyCode::Char('d') if ctrl && self.input.is_empty() => self.quit(),
             KeyCode::Char('a') if ctrl => self.input.home(),
             KeyCode::Char('e') if ctrl => self.input.end(),
@@ -468,6 +646,7 @@ impl App {
     fn toggle_expanded(&mut self) {
         self.expanded = !self.expanded;
         self.transcript.invalidate();
+        self.selection = None;
     }
 
     fn cycle_mode(&mut self, to: Option<PermissionMode>) {
@@ -542,6 +721,20 @@ impl App {
             "/help" | "/?" => self.help(),
             "/exit" | "/quit" => self.quit(),
             "/expand" => self.toggle_expanded(),
+            "/mouse" => {
+                self.mouse_capture = !self.mouse_capture;
+                self.selection = None;
+                self.actions
+                    .push(Action::SetMouseCapture(self.mouse_capture));
+                self.notice(
+                    Level::Info,
+                    if self.mouse_capture {
+                        "Mouse capture on · drag to select and copy, wheel to scroll"
+                    } else {
+                        "Mouse capture off · select and copy with your terminal; /mouse to turn it back on"
+                    },
+                );
+            }
             "/clear" | "/new" => {
                 if self.busy.is_some() {
                     return self.notice(
@@ -550,6 +743,7 @@ impl App {
                     );
                 }
                 self.transcript.clear();
+                self.selection = None;
                 self.transcript.push(Entry::Welcome(Welcome {
                     user: self.user.clone(),
                     model: self.model.clone(),
@@ -645,6 +839,10 @@ impl App {
              shift+tab                    cycle permission mode\n  \
              ↑ ↓                          history\n  \
              pgup pgdn · wheel            scroll\n  \
+             drag · double/triple-click   select and copy text (esc clears)\n  \
+             ctrl+c (with a selection)    copy the selection again\n  \
+             ctrl+v · terminal paste      paste into the prompt\n  \
+             shift+drag · /mouse          native terminal selection\n  \
              ctrl+o                       expand tool output\n  \
              ctrl+c ctrl+c · ctrl+d       quit",
         );
@@ -812,7 +1010,7 @@ mod tests {
         let mut app = app();
         type_text(&mut app, "/mo");
         let names: Vec<_> = app.palette().iter().map(|c| c.0).collect();
-        assert_eq!(names, ["/model", "/mode"]);
+        assert_eq!(names, ["/model", "/mode", "/mouse"]);
         app.on_key(key(KeyCode::Down));
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.input.text(), "/mode ");
